@@ -6,12 +6,21 @@ const GITHUB_PAGES_ORIGIN = 'https://huxhkuh.github.io';
 const names = { rounded: 'friendly rounded filled vector shapes and gentle accent areas', outline: 'clean open line icons with rounded line caps, consistent 3px stroke', duotone: 'minimal two-tone geometric icons with a single accent color' };
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { ...HEADER, 'Content-Type': 'application/json;charset=utf-8' } });
 function validColors(raw) { return Array.isArray(raw) ? raw.filter(x => /^#[0-9a-f]{6}$/i.test(x)).slice(0, 3) : [] }
-function accessOK(request, env) {
-  const expected = env.STUDIO_ACCESS_CODE;
-  const provided = request.headers.get('x-studio-access') || '';
-  if (!expected || !provided || provided.length !== expected.length || provided.length > 256) return false;
-  let v = 0; for (let i = 0; i < expected.length; i++) v |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
-  return v === 0;
+const DAILY_LIMITS = {analyze:{personal:8,global:80},icon:{personal:4,global:20}};
+async function consumeQuota(request, env, kind) {
+  if (!env.QUOTAS || !env.STUDIO_ACCESS_CODE) throw new Error('מנגנון ההגנה על השימוש אינו זמין');
+  const ip = request.headers.get('CF-Connecting-IP');
+  if (!ip || ip.length > 80) return false;
+  const day = new Date().toISOString().slice(0,10);
+  const input = new TextEncoder().encode(env.STUDIO_ACCESS_CODE + ':' + day + ':' + ip);
+  const digest = await crypto.subtle.digest('SHA-256',input);
+  const hash=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
+  const plan=DAILY_LIMITS[kind];
+  const sql="INSERT INTO quota_counters (id, used, day) VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET used=used+1 WHERE used < ? RETURNING used";
+  const user=await env.QUOTAS.prepare(sql).bind(day+':'+kind+':ip:'+hash,day,plan.personal).first();
+  if (!user) return false;
+  const total=await env.QUOTAS.prepare(sql).bind(day+':'+kind+':global',day,plan.global).first();
+  return !!total;
 }
 function safeSiteUrl(raw) {
   const u = new URL(raw); const h = u.hostname.toLowerCase().replace(/\.$/, '');
@@ -95,9 +104,9 @@ export default {
     }
     if (request.method === 'OPTIONS' && (url.pathname === '/api/analyze' || url.pathname === '/api/icon')) {
       if (request.headers.get('origin') !== GITHUB_PAGES_ORIGIN) return new Response(null, { status: 403, headers: HEADER });
-      return new Response(null, { status: 204, headers: { ...HEADER, 'Access-Control-Allow-Origin': GITHUB_PAGES_ORIGIN, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'content-type, x-studio-access', 'Access-Control-Max-Age': '600', 'Vary': 'Origin' } });
+      return new Response(null, { status: 204, headers: { ...HEADER, 'Access-Control-Allow-Origin': GITHUB_PAGES_ORIGIN, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Max-Age': '600', 'Vary': 'Origin' } });
     }
-    if (request.method === 'GET' && url.pathname === '/api/health') return reply({ ok: true, aiConfigured: Boolean(env.OPENAI_API_KEY), privateStudioConfigured: Boolean(env.STUDIO_ACCESS_CODE), version: '1.0.0' });
+    if (request.method === 'GET' && url.pathname === '/api/health') return reply({ ok: true, aiConfigured: Boolean(env.OPENAI_API_KEY), privateStudioConfigured: false, publicGeneration: Boolean(env.OPENAI_API_KEY && env.QUOTAS), dailyIconsPerVisitor: 4, version: '2.1.0' });
     if (request.method === 'POST' && (url.pathname === '/api/analyze' || url.pathname === '/api/icon')) {
       const origin = request.headers.get('origin');
       const cors = (response) => {
@@ -109,14 +118,17 @@ export default {
         return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
       };
       if (origin && origin !== url.origin && origin !== GITHUB_PAGES_ORIGIN) return reply({ error: 'Origin not allowed' }, 403);
-      if (!env.OPENAI_API_KEY || !env.STUDIO_ACCESS_CODE) return cors(reply({ error: 'היצירה עדיין לא הופעלה: יש להגדיר OPENAI_API_KEY ו־STUDIO_ACCESS_CODE כ־Secrets בשרת.' }, 503));
-      if (!accessOK(request, env)) return cors(reply({ error: 'קוד הגישה שגוי' }, 401));
+      if (!env.OPENAI_API_KEY || !env.QUOTAS) return cors(reply({ error: 'השירות עדיין אינו מוכן ליצירה' }, 503));
       if (!/^application\/json\b/i.test(request.headers.get('content-type') || '')) return cors(reply({ error: 'יש לשלוח JSON' }, 415));
       if (+request.headers.get('content-length') > MAX_BODY) return cors(reply({ error: 'בקשה גדולה מדי' }, 413));
       try {
         const txt = await request.text(); if (txt.length > MAX_BODY) return cors(reply({ error: 'בקשה גדולה מדי' }, 413));
-        const body = JSON.parse(txt);
-        return cors(url.pathname === '/api/analyze' ? await analyze(body, env) : await icon(body, env));
+        const body=JSON.parse(txt);
+        const kind=url.pathname === '/api/analyze'?'analyze':'icon';
+        if(kind==='icon'&&(!String(body?.name||'').trim()||validColors(body?.brand?.colors).length<2))return cors(reply({error:'חסר שם או צבעים לאייקון'},400));
+        if(kind==='analyze'&&(validColors(body?.colors).length===0||(body?.mode==='logo'&&!body?.logoData)||(body?.mode==='url'&&!body?.siteUrl)))return cors(reply({error:'חסרים לוגו או אתר וצבעים'},400));
+        if(!await consumeQuota(request,env,kind))return cors(reply({error:'מכסת היצירה להיום הסתיימה. אפשר לחזור מחר.'},429));
+        return cors(kind==='analyze'?await analyze(body,env):await icon(body,env));
       } catch (e) { return cors(reply({ error: String(e?.message || 'שגיאה').slice(0, 210) }, 422)) }
     }
     return new Response('Not found', { status: 404, headers: HEADER });

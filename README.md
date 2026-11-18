@@ -1,59 +1,16 @@
 # Iconly — Custom Icon Studio
 
-[Open source code](https://github.com/huxhkuh/Custom-icon) · [GitHub Pages](https://huxhkuh.github.io/Custom-icon/) · [Original Cloudflare demo](https://iconly-brand-studio.l0548461204.workers.dev/)
+Public brand-aware native SVG icon generator. **Live URL:** https://huxhkuh.github.io/Custom-icon/
 
-Iconly is a Hebrew RTL, brand-aware **native SVG** icon generator. Upload a PNG/JPEG/WebP brand logo or paste the URL of a public HTTPS website, choose an icon style, and download individual vector SVG icons or a complete ZIP with a `references.json` manifest.
+Users can upload a logo or public HTTPS brand website, generate up to 4 SVG icons per visitor per UTC day, download a ZIP with references, without an account or access code.
 
-## Project structure
+## Architecture
+- GitHub Pages serves static HTML from `docs/index.html`.
+- Cloudflare Worker `iconly-brand-studio` hosts the paid API and retains `OPENAI_API_KEY` as an encrypted secret.
+- D1 database binding `QUOTAS`, database `iconly-public-quotas`, enforces 4 icons per IP per UTC day (20 globally/day) and 8 brand analyses per IP per UTC day (80 globally/day). Missing bindings or database errors fail closed.
+- `STUDIO_ACCESS_CODE` is retained as a **server-only hashing salt** for daily visitor hashes. It is *not* used as an access password.
+- No API keys appear in repository or browser. Do not expose Cloudflare secrets through CI, JS, GitHub Pages, or public files.
+- Public generation consumes paid API credits. Use an OpenAI project budget as an additional safeguard; quotas are not monetary caps.
+- This is a small public beta, not hardened for heavy traffic. Consider Turnstile, bot protections and accounts before launch at scale.
 
-- `site.html`: original UI source code (works on GitHub Pages and inside Cloudflare Worker).
-- `docs/index.html`: generated static site for GitHub Pages.
-- `src/api.mjs`: Cloudflare Worker API; all OpenAI calls happen here.
-- `worker.js`: generated self-contained backend bundle.
-- `scripts/build.mjs`: compiles both targets from the same source.
-- `.github/workflows/pages.yml`: automatic tests and GitHub Pages deployment.
-
-## Publishing the website from this GitHub project
-
-**One-time required action:** Open [repository Settings → Pages](https://github.com/huxhkuh/Custom-icon/settings/pages), under **Build and deployment → Source**, choose **GitHub Actions**.
-
-After that, each push to `main` triggers `.github/workflows/pages.yml`, runs `npm run check`, and publishes the site at **https://huxhkuh.github.io/Custom-icon/**.
-
-GitHub Pages is static and does **not** store the API key. Its frontend calls the Cloudflare Worker backend via a restricted origin.
-
-## Configure paid AI generation securely
-
-The backend lives at https://iconly-brand-studio.l0548461204.workers.dev/. In Cloudflare: **Workers & Pages → iconly-brand-studio → Settings → Variables and Secrets**, add the following values as *encrypted secrets*, not plain environment variables:
-
-1. `OPENAI_API_KEY`: an OpenAI Project API key with appropriate spending limits.
-2. `STUDIO_ACCESS_CODE`: a separate long random owner access password, at least 24 characters.
-
-The owner access code is entered on the website by the person generating icons. **Never add these secrets to this public GitHub repo, a JS file, or GitHub Pages configuration.**
-
-Until both encrypted secrets are set, generation is disabled. The sample icon gallery is illustrative and still works without credentials.
-
-**Backend deployments are currently manual.** The GitHub Pages frontend is published automatically; changing `src/api.mjs` also requires deploying the newly built `worker.js` to Cloudflare. For automatic backend deploys later, connect the repository to Cloudflare Workers Builds without storing a production key in public source.
-
-## Local verification
-
-Node.js 20+ required; no third-party npm runtime dependencies.
-
-```bash
-npm run check
-```
-
-## Security considerations
-
-- The public repository contains zero secret values.
-- Every chargeable endpoint requires an owner-only access code; CORS is allowlisted but does not replace authentication.
-- The Worker bounds request sizes, fetches public HTTPS pages only, and rejects dangerous SVG markup.
-- Uploaded logos are not persisted in an application database; they are sent to OpenAI for analysis. Generated files are held in browser memory until downloaded.
-- Before offering this as an anonymous public SaaS: add account authentication, usage quotas, rate limits, abuse prevention, and billing.
-- The API is not operational until both Cloudflare secrets are configured.
-
-## Models
-
-- OpenAI Responses: `gpt-5-mini` for visual/site-brand analysis.
-- OpenAI Images: `gpt-image-2.6-flare` with `output_format: "svg"`.
-
-Official [image-generation documentation](https://developers.openai.com/api/docs/guides/image-generation).
+Run `npm run check` to build both outputs and test. Changes to `site.html` deploy via GitHub Actions. Changes to `src/api.mjs` also require redeploying `worker.js` to Cloudflare.
