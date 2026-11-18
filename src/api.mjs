@@ -1,27 +1,15 @@
 // Iconly — brand-aware SVG icon studio. Cloudflare Workers module.
-// Secrets (NEVER commit actual values): OPENAI_API_KEY, STUDIO_ACCESS_CODE
+// Secrets (NEVER commit actual values): OPENAI_API_KEY
 const HEADER = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin' };
 const MAX_BODY = 2_900_000;
 const GITHUB_PAGES_ORIGIN = 'https://huxhkuh.github.io';
-const names = { rounded: 'friendly rounded filled vector shapes and gentle accent areas', outline: 'clean open line icons with rounded line caps, consistent 3px stroke', duotone: 'minimal two-tone geometric icons with a single accent color' };
+const names = {
+  rounded: 'A rounded filled UI glyph with one main solid shape and at most one accent.',
+  outline: 'An open line glyph with uniform 2-unit strokes on a 24-unit grid, rounded caps and joins, and no fills.',
+  duotone: 'A filled pictogram using one primary shape and one secondary shape in two flat colors.'
+};
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { ...HEADER, 'Content-Type': 'application/json;charset=utf-8' } });
 function validColors(raw) { return Array.isArray(raw) ? raw.filter(x => /^#[0-9a-f]{6}$/i.test(x)).slice(0, 3) : [] }
-const DAILY_LIMITS = {analyze:{personal:8,global:80},icon:{personal:4,global:20}};
-async function consumeQuota(request, env, kind) {
-  if (!env.QUOTAS || !env.STUDIO_ACCESS_CODE) throw new Error('מנגנון ההגנה על השימוש אינו זמין');
-  const ip = request.headers.get('CF-Connecting-IP');
-  if (!ip || ip.length > 80) return false;
-  const day = new Date().toISOString().slice(0,10);
-  const input = new TextEncoder().encode(env.STUDIO_ACCESS_CODE + ':' + day + ':' + ip);
-  const digest = await crypto.subtle.digest('SHA-256',input);
-  const hash=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
-  const plan=DAILY_LIMITS[kind];
-  const sql="INSERT INTO quota_counters (id, used, day) VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET used=used+1 WHERE used < ? RETURNING used";
-  const user=await env.QUOTAS.prepare(sql).bind(day+':'+kind+':ip:'+hash,day,plan.personal).first();
-  if (!user) return false;
-  const total=await env.QUOTAS.prepare(sql).bind(day+':'+kind+':global',day,plan.global).first();
-  return !!total;
-}
 function safeSiteUrl(raw) {
   const u = new URL(raw); const h = u.hostname.toLowerCase().replace(/\.$/, '');
   if (u.protocol !== 'https:' || u.username || u.password || u.port && u.port !== '443' || h.length > 253 || !h.includes('.') || /(^|\.)(localhost|local|internal|test|invalid)$/.test(h) || /(^|\.)(localhost|local|internal|test|invalid)\./.test(h) || /^\d+(\.\d+){3}$/.test(h) || /^\[|:$/.test(h) || h.includes(':') || !/^[a-z0-9.-]+$/.test(h)) throw new Error('יש להזין כתובת HTTPS של אתר ציבורי.');
@@ -85,7 +73,16 @@ async function icon(body, env) {
   if (!name || /[<>\r\n]/.test(name)) return reply({ error: 'שם אייקון לא תקין' }, 400);
   const b = body.brand || {}, colors = validColors(b.colors);
   if (colors.length < 2) return reply({ error: 'חסרה פלטת צבעים' }, 400);
-  const prompt = `Design ONE independent original professional SVG icon depicting "${name}" for the brand "${String(b.name || '').slice(0, 60)}". Brand direction: ${String(b.description || '').slice(0, 150)}. Geometric language: ${String(b.geometry || '').slice(0, 120)}. Style: ${names[style]}. Color palette: ${colors.join(', ')} ONLY. Maintain consistent silhouette, volume, proportions, optical balance, 12% padding and rounded edges. Icon visually readable at 32px. Centered isolated icon, transparent background, no text, no letters, no logo, no watermark, no photography, no scene, no shadow outside the shape. Clean editable native SVG vector paths, not an embedded raster image.`;
+  const prompt = [
+    `Create one original, cute, functional SVG interface icon for “${name}”. It will appear in a mobile app toolbar or menu at 24 pixels.`,
+    'Use a square 24-unit design grid (or scale its proportions to the output canvas), roughly 2 units of clear padding, and one instantly recognizable silhouette.',
+    'Use 1–3 simple geometric shapes, soft corners, broad negative spaces, and even visual weight across a consistent icon family. Choose the conventional UI symbol when one exists.',
+    'Cute means rounded proportions and one restrained accent. Avoid decorative details, faces, scenery, perspective, textures, gradients, shadows, badge backgrounds, borders around the canvas, and lettering.',
+    'Use a transparent canvas and editable native SVG geometry. Make the silhouette legible at 16 px and center it optically.',
+    `Style: ${names[style]}`,
+    `Brand palette: ${colors.join(', ')}. Choose the strongest contrast for the main form and use at most two colors. Prefer readability over brand decoration.`,
+    `Use these brand cues only if they support the glyph: ${String(b.geometry || '').slice(0, 120)}.`
+  ].join(' ');
   const j = await openai('https://api.openai.com/v1/images/generations', { model: 'gpt-image-2.6-flare', prompt, output_format: 'svg', svg: { model: 'gpt-5-mini', reasoning: { effort: 'low' } }, n: 1, size: '1024x1024', quality: 'low', complexity: 'low' }, env);
   const encoded = j.data?.[0]?.b64_json;
   if (!encoded || encoded.length > 1000000) throw new Error('לא התקבל SVG');
@@ -106,7 +103,7 @@ export default {
       if (request.headers.get('origin') !== GITHUB_PAGES_ORIGIN) return new Response(null, { status: 403, headers: HEADER });
       return new Response(null, { status: 204, headers: { ...HEADER, 'Access-Control-Allow-Origin': GITHUB_PAGES_ORIGIN, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Max-Age': '600', 'Vary': 'Origin' } });
     }
-    if (request.method === 'GET' && url.pathname === '/api/health') return reply({ ok: true, aiConfigured: Boolean(env.OPENAI_API_KEY), privateStudioConfigured: false, publicGeneration: Boolean(env.OPENAI_API_KEY && env.QUOTAS), dailyIconsPerVisitor: 4, version: '2.1.0' });
+    if (request.method === 'GET' && url.pathname === '/api/health') return reply({ ok: true, aiConfigured: Boolean(env.OPENAI_API_KEY), privateStudioConfigured: false, publicGeneration: Boolean(env.OPENAI_API_KEY), dailyIconsPerVisitor: null, version: '2.2.0' });
     if (request.method === 'POST' && (url.pathname === '/api/analyze' || url.pathname === '/api/icon')) {
       const origin = request.headers.get('origin');
       const cors = (response) => {
@@ -118,7 +115,7 @@ export default {
         return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
       };
       if (origin && origin !== url.origin && origin !== GITHUB_PAGES_ORIGIN) return reply({ error: 'Origin not allowed' }, 403);
-      if (!env.OPENAI_API_KEY || !env.QUOTAS) return cors(reply({ error: 'השירות עדיין אינו מוכן ליצירה' }, 503));
+      if (!env.OPENAI_API_KEY) return cors(reply({ error: 'השירות עדיין אינו מוכן ליצירה' }, 503));
       if (!/^application\/json\b/i.test(request.headers.get('content-type') || '')) return cors(reply({ error: 'יש לשלוח JSON' }, 415));
       if (+request.headers.get('content-length') > MAX_BODY) return cors(reply({ error: 'בקשה גדולה מדי' }, 413));
       try {
@@ -127,7 +124,6 @@ export default {
         const kind=url.pathname === '/api/analyze'?'analyze':'icon';
         if(kind==='icon'&&(!String(body?.name||'').trim()||validColors(body?.brand?.colors).length<2))return cors(reply({error:'חסר שם או צבעים לאייקון'},400));
         if(kind==='analyze'&&(validColors(body?.colors).length===0||(body?.mode==='logo'&&!body?.logoData)||(body?.mode==='url'&&!body?.siteUrl)))return cors(reply({error:'חסרים לוגו או אתר וצבעים'},400));
-        if(!await consumeQuota(request,env,kind))return cors(reply({error:'מכסת היצירה להיום הסתיימה. אפשר לחזור מחר.'},429));
         return cors(kind==='analyze'?await analyze(body,env):await icon(body,env));
       } catch (e) { return cors(reply({ error: String(e?.message || 'שגיאה').slice(0, 210) }, 422)) }
     }
