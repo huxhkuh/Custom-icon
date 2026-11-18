@@ -87,7 +87,7 @@ async function icon(body, env) {
   const b = body.brand || {}, colors = validColors(b.colors);
   if (colors.length < 2) return reply({ error: 'חסרה פלטת צבעים' }, 400);
   const prompt = `Design ONE independent original professional SVG icon depicting "${name}" for the brand "${String(b.name || '').slice(0, 60)}". Brand direction: ${String(b.description || '').slice(0, 150)}. Geometric language: ${String(b.geometry || '').slice(0, 120)}. Style: ${names[style]}. Color palette: ${colors.join(', ')} ONLY. Maintain consistent silhouette, volume, proportions, optical balance, 12% padding and rounded edges. Icon visually readable at 32px. Centered isolated icon, transparent background, no text, no letters, no logo, no watermark, no photography, no scene, no shadow outside the shape. Clean editable native SVG vector paths, not an embedded raster image.`;
-  const j = await openai('https://api.openai.com/v1/images/generations', { model: 'gpt-image-2.6-flare', prompt, output_format: 'svg', background: 'transparent', n: 1, size: '1024x1024', quality: 'low', complexity: 'low' }, env);
+  const j = await openai('https://api.openai.com/v1/images/generations', { model: 'gpt-image-2.6-flare', prompt, output_format: 'svg', svg: { model: 'gpt-5-mini', reasoning: { effort: 'low' } }, n: 1, size: '1024x1024', quality: 'low', complexity: 'low' }, env);
   const encoded = j.data?.[0]?.b64_json;
   if (!encoded || encoded.length > 1000000) throw new Error('לא התקבל SVG');
   const bytes = Uint8Array.from(atob(encoded), ch => ch.charCodeAt(0));
